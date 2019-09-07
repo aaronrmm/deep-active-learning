@@ -1,8 +1,11 @@
 import numpy as np
 import torch
+import os
+from pathlib import Path
 from torchvision import datasets
 from torch.utils.data import Dataset
 from PIL import Image
+
 
 def get_dataset(name):
     if name == 'MNIST':
@@ -14,6 +17,7 @@ def get_dataset(name):
     elif name == 'CIFAR10':
         return get_CIFAR10()
 
+
 def get_MNIST():
     raw_tr = datasets.MNIST('./MNIST', train=True, download=True)
     raw_te = datasets.MNIST('./MNIST', train=False, download=True)
@@ -22,6 +26,7 @@ def get_MNIST():
     X_te = raw_te.test_data
     Y_te = raw_te.test_labels
     return X_tr, Y_tr, X_te, Y_te
+
 
 def get_FashionMNIST():
     raw_tr = datasets.FashionMNIST('./FashionMNIST', train=True, download=True)
@@ -32,6 +37,7 @@ def get_FashionMNIST():
     Y_te = raw_te.test_labels
     return X_tr, Y_tr, X_te, Y_te
 
+
 def get_SVHN():
     data_tr = datasets.SVHN('./SVHN', split='train', download=True)
     data_te = datasets.SVHN('./SVHN', split='test', download=True)
@@ -40,6 +46,7 @@ def get_SVHN():
     X_te = data_te.data
     Y_te = torch.from_numpy(data_te.labels)
     return X_tr, Y_tr, X_te, Y_te
+
 
 def get_CIFAR10():
     data_tr = datasets.CIFAR10('./CIFAR10', train=True, download=True)
@@ -50,6 +57,7 @@ def get_CIFAR10():
     Y_te = torch.from_numpy(np.array(data_te.test_labels))
     return X_tr, Y_tr, X_te, Y_te
 
+
 def get_handler(name):
     if name == 'MNIST':
         return DataHandler1
@@ -59,6 +67,7 @@ def get_handler(name):
         return DataHandler2
     elif name == 'CIFAR10':
         return DataHandler3
+
 
 class DataHandler1(Dataset):
     def __init__(self, X, Y, transform=None):
@@ -76,6 +85,7 @@ class DataHandler1(Dataset):
     def __len__(self):
         return len(self.X)
 
+
 class DataHandler2(Dataset):
     def __init__(self, X, Y, transform=None):
         self.X = X
@@ -92,6 +102,7 @@ class DataHandler2(Dataset):
     def __len__(self):
         return len(self.X)
 
+
 class DataHandler3(Dataset):
     def __init__(self, X, Y, transform=None):
         self.X = X
@@ -107,3 +118,24 @@ class DataHandler3(Dataset):
 
     def __len__(self):
         return len(self.X)
+
+
+class FastaiDataHandler(Dataset):
+    def __init__(self, train_dir, test_dir, transform=None):
+        assert os.path.isdir(train_dir), str("labeled_train_dir is not a dir")
+        assert os.path.isdir(test_dir), str("labeled_test_dir is not a dir")
+        self.transform = transform
+        self.X = []
+        self.Y = []
+        for class_dir in os.listdir(train_dir):
+            class_files = os.listdir(class_files)
+            self.X += [str(Path(train_dir, class_dir, img_file) for img_file in class_files)]
+            self.Y += [str(class_dir) for i in class_files]
+            assert (len(self.X) == len(self.Y))
+
+    def __getitem__(self, index):
+
+        x, y = Image(self.X[index]), Image(self.Y[index])
+        if self.transform is not None:
+            x = self.transform(x)
+        return x, y, index
