@@ -1,9 +1,20 @@
+from pathlib import Path
+
 import numpy as np
+from torch.optim.sgd import SGD
+from torch.utils.data.dataloader import DataLoader
+from torch import optim
+import torch.nn.functional as F
+import torchvision.datasets as datasets
+import torchvision.transforms as transforms
+import torchvision.utils as vutils
+
 from dataset import get_dataset, get_handler
 from model import get_net
 import config
 from torchvision import transforms
 import torch
+import os
 from query_strategies import RandomSampling, LeastConfidence, MarginSampling, EntropySampling, \
     LeastConfidenceDropout, MarginSamplingDropout, EntropySamplingDropout, \
     KMeansSampling, KCenterGreedy, BALDDropout, CoreSet, \
@@ -17,81 +28,130 @@ NUM_QUERY = 1000
 NUM_ROUND = 10
 
 configuration = config.load_config()
-DATA_NAME = configuration.DATA_NAME
+net = get_net(configuration.net)()
+if configuration.load_model:
+    try:
+        net.load_state_dict(torch.load(configuration.model_file))
+    except:
+        print("No model file found at", configuration.model_file)
 
-args_pool = {'MNIST':
-                 {'n_epoch': 10,
-                  'transform': transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))]),
-                  'loader_tr_args': {'batch_size': 64, 'num_workers': configuration.get_num_workers()},
-                  'loader_te_args': {'batch_size': 1000, 'num_workers': configuration.get_num_workers()},
-                  'optimizer_args': {'lr': 0.01, 'momentum': 0.5}}
-             }
-args = args_pool[DATA_NAME]
 
 # set seed
 np.random.seed(SEED)
 torch.manual_seed(SEED)
-#torch.backends.cudnn.enabled = False
+# torch.backends.cudnn.enabled = False
 
 # load dataset
-X_tr, Y_tr, X_te, Y_te = get_dataset(DATA_NAME)
+dataset = datasets.ImageFolder(root=configuration.labeled_training_dir,
+                               transform=transforms.Compose([
+                                   transforms.Resize(configuration.image_size)
+                                   , transforms.CenterCrop(configuration.image_size)
+                                   , transforms.ToTensor()
+                                   , transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                               ]))
+classes = dataset.classes
+for class_name in classes:
+    if not os.path.isdir(Path(configuration.predicted_dir, class_name)):
+        os.makedirs(Path(configuration.predicted_dir,class_name), exist_ok=False)
+# create dataloader
+device = torch.device("cuda:0" if (torch.cuda.is_available() and configuration.num_gpus > 0) else "cpu")
 
-# start experiment
-n_pool = len(Y_tr)
-n_test = len(Y_te)
-print('number of labeled pool: {}'.format(NUM_INIT_LB))
-print('number of unlabeled pool: {}'.format(n_pool - NUM_INIT_LB))
-print('number of testing pool: {}'.format(n_test))
+dataloader = DataLoader(dataset, batch_size=configuration.batch_size, shuffle=True,
+                        num_workers=configuration.num_workers)
 
-# generate initial labeled pool
-idxs_lb = np.zeros(n_pool, dtype=bool)
-idxs_tmp = np.arange(n_pool)
-np.random.shuffle(idxs_tmp)
-idxs_lb[idxs_tmp[:NUM_INIT_LB]] = True
+# X_tr, Y_tr, X_te, Y_te = dataset.get_split()
 
-# load network
-net = get_net(DATA_NAME)
-handler = get_handler(DATA_NAME)
+optimizer = optim.SGD(net.parameters(), **configuration.optimizer_args)
+net = net.to(device)
 
-# strategy = RandomSampling(X_tr, Y_tr, idxs_lb, net, handler, args)
-# strategy = LeastConfidence(X_tr, Y_tr, idxs_lb, net, handler, args)
-# strategy = MarginSampling(X_tr, Y_tr, idxs_lb, net, handler, args)
-# strategy = EntropySampling(X_tr, Y_tr, idxs_lb, net, handler, args)
-# strategy = LeastConfidenceDropout(X_tr, Y_tr, idxs_lb, net, handler, args, n_drop=10)
-# strategy = MarginSamplingDropout(X_tr, Y_tr, idxs_lb, net, handler, args, n_drop=10)
-strategy = EntropySamplingDropout(X_tr, Y_tr, idxs_lb, net, handler, args, n_drop=10)
+# train
+losses = []
+for epoch in range(configuration.epochs):
+    net.train()
+    for batch_idx, (x, y) in enumerate(dataloader):
+        x, y = x.to(device), y.to(device)
+        optimizer.zero_grad()
+        # print('x', x.shape)
+        out, e1 = net(x)
+        # print("out", out.shape, out)
+        # print("y", y.shape, y)
+        loss = F.cross_entropy(out, y)
+        loss.backward()
+        optimizer.step()
+        losses.append(loss.detach())
+        print(loss)
+print(losses[-1])
 
+if configuration.save_model:
+    torch.save(net.state_dict(), configuration.model_file)
+    print("Model saved")
+# get entropy of unlabeled images
+'''
+unlabeled_dataset = datasets.ImageFolder(root=configuration.unlabeled_dir,
+                                         transform=transforms.Compose([
+                                             transforms.Resize(configuration.image_size)
+                                             , transforms.CenterCrop(configuration.image_size)
+                                             , transforms.ToTensor()
+                                             , transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                                         ]))
 
+unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=1, shuffle=False)
+'''
+transform = transforms.Compose([
+    transforms.Resize(configuration.image_size)
+    , transforms.CenterCrop(configuration.image_size)
+    , transforms.ToTensor()
+    , transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
 
-# print info
-print(DATA_NAME)
-print('SEED {}'.format(SEED))
-print(type(strategy).__name__)
+unlabeled_images = [file_name for file_name in os.listdir(configuration.unlabeled_dir) if file_name.endswith('.jpg') or file_name.endswith('.png')]
+print("preparing", str(len(unlabeled_images)), "unlabeled_images for entropy")
+probs = torch.zeros([len(unlabeled_images), 2])  # todo 2 -> num classes
+with torch.no_grad():
+    for idx, image_name in enumerate(unlabeled_images):
+        if idx % 100 == 0:
+            print("finding entropy of images", str(idx), " to", str(idx + 100))
+        image_path = Path(configuration.unlabeled_dir, image_name)
+        image = config.PIL.Image.open(image_path).convert("RGB")
+        transformed_image = transform(image)
+        transformed_image = transformed_image.unsqueeze(0).to(device)
+        # for idx, (x, y) in enumerate(unlabeled_loader):
+        # x, y = x.to(device), y.to(device)
+        out, e1 = net(transformed_image)
+        prob = F.softmax(out, dim=1)
+        probs[idx] += prob.cpu()[0]
+    probs /= 2
 
-# round 0 accuracy
-strategy.train()
-P = strategy.predict(X_te, Y_te)
-acc = np.zeros(NUM_ROUND + 1)
-acc[0] = 1.0 * (Y_te == P).sum().item() / len(Y_te)
-print('Round 0\ntesting accuracy {}'.format(acc[0]))
+log_probs = torch.log(probs)
+U = (probs * log_probs).sum(1)
+requests = U.sort()[1]
 
-for rd in range(1, NUM_ROUND + 1):
-    print('Round {}'.format(rd))
+for request_idx in requests:
+    print((unlabeled_images[request_idx]), U[request_idx])
 
-    # query
-    q_idxs = strategy.query(NUM_QUERY)
-    idxs_lb[q_idxs] = True
+# request human labeling of most confusing unlabeled examples
+if configuration.num_to_request > 0:
+    for request_idx in requests[:configuration.num_to_request]:
+        image_name = unlabeled_images[request_idx]
+        old_image_path = Path(configuration.unlabeled_dir, image_name)
+        new_image_path = Path(configuration.requested_dir, image_name)
+        os.rename(old_image_path, new_image_path)
 
-    # update
-    strategy.update(idxs_lb)
-    strategy.train()
+# predict least confusing unlabeled examples
+if configuration.num_to_predict > 0:
+    for request_idx in requests[-configuration.num_to_predict:]:
+        image_name = unlabeled_images[request_idx]
+        image_path = Path(configuration.unlabeled_dir, image_name)
+        image = config.PIL.Image.open(image_path).convert("RGB")
+        transformed_image = transform(image)
+        transformed_image = transformed_image.unsqueeze(0).to(device)
+        # for idx, (x, y) in enumerate(unlabeled_loader):
+        # x, y = x.to(device), y.to(device)
+        out, e1 = net(transformed_image)
+        class_name = classes[out.argmax()]
 
-    # round accuracy
-    P = strategy.predict(X_te, Y_te)
-    acc[rd] = 1.0 * (Y_te == P).sum().item() / len(Y_te)
-    print('testing accuracy {}'.format(acc[rd]))
+        old_image_path = Path(configuration.unlabeled_dir, image_name)
+        new_image_path = Path(configuration.predicted_dir, class_name, image_name)
+        os.rename(old_image_path, new_image_path)
 
-# print results
-print('SEED {}'.format(SEED))
-print(type(strategy).__name__)
-print(acc)
+print(losses[-1])

@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 def get_net(name):
     if name == 'MNIST':
         return Net1
@@ -10,6 +11,9 @@ def get_net(name):
         return Net2
     elif name == 'CIFAR10':
         return Net3
+    elif name == 'Net4':
+        return Net4
+
 
 class Net1(nn.Module):
     def __init__(self):
@@ -78,3 +82,25 @@ class Net3(nn.Module):
 
     def get_embedding_dim(self):
         return 50
+
+class Net4(nn.Module):
+    def __init__(self):
+        super(Net4, self).__init__()
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=5)
+        self.conv2 = nn.Conv2d(32, 32, kernel_size=5)
+        self.conv3 = nn.Conv2d(32, 64, kernel_size=5)
+        self.fc1 = nn.Linear(9*1024, 50)
+        self.fc2 = nn.Linear(50, 2)
+
+    def forward(self, x):
+        batch_size = x.shape[0]
+        x = F.relu(self.conv1(x))
+        x = F.relu(F.max_pool2d(self.conv2(x), 2))
+        x = F.relu(F.max_pool2d(self.conv3(x), 2))
+        x = x.view(batch_size, 9 * 1024)
+        e1 = F.relu(self.fc1(x))
+        x = F.dropout(e1, training=self.training)
+        x = self.fc2(x)
+        x = x.view(batch_size, -1)
+
+        return x, e1

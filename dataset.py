@@ -1,3 +1,4 @@
+import PIL
 import numpy as np
 import torch
 import os
@@ -127,15 +128,23 @@ class FastaiDataHandler(Dataset):
         self.transform = transform
         self.X = []
         self.Y = []
-        for class_dir in os.listdir(train_dir):
-            class_files = os.listdir(class_files)
-            self.X += [str(Path(train_dir, class_dir, img_file) for img_file in class_files)]
-            self.Y += [str(class_dir) for i in class_files]
+        for idx, class_dir in enumerate(os.listdir(train_dir)):
+            class_files = os.listdir(str(Path(train_dir, class_dir)))
+            self.X += [str(Path(train_dir, class_dir, img_file)) for img_file in class_files]
+            self.Y += [idx for i in class_files]
             assert (len(self.X) == len(self.Y))
+            assert (len(self.X) > 0)
+
+    def __len__(self):
+        return len(self.X)
 
     def __getitem__(self, index):
+        print(self.X[index])
 
-        x, y = Image(self.X[index]), Image(self.Y[index])
+        x = PIL.Image.open(self.X[index]).convert("RGB")
+        x = np.asarray(x)
+        y = self.Y[index]
+        print(x)
         if self.transform is not None:
             x = self.transform(x)
         return x, y, index
